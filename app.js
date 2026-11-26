@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, collection, addDoc, query, where, orderBy, onSnapshot, doc, updateDoc, setDoc, deleteDoc, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 /* ====== НАЛАШТУВАННЯ ====== */
@@ -21,6 +21,10 @@ const NOTIFY_URL = "";
 // Оплата переказом на картку. Залиште PAY_CARD "" щоб вимкнути цей спосіб.
 const PAY_CARD = "";            // напр. "5375 41XX XXXX XXXX"
 const PAY_CARD_HOLDER = "";     // напр. "Олександр К."
+
+// Вхід через Google на телефонах: redirect + проксі через ваш домен (див. vercel.json і SETUP-PAYMENT-TELEGRAM.md).
+// Якщо поставити false — телефони використовуватимуть звичайне вікно входу (на багатьох телефонах воно не працює).
+const MOBILE_REDIRECT_LOGIN = true;
 /* ========================== */
 
 const CATS = {all:"Усе",bottle:"Бутлі 19 л",pack:"Пляшки та каністри",mineral:"Мінеральна та газована",kids:"Дитяча",equip:"Кулери та помпи",acc:"Аксесуари"};
@@ -57,7 +61,10 @@ const PAYMENTS = {cash:"Готівка кур'єру",courier_card:"Картка
 const EMOJIS = ["💧","🫙","♻️","💎","🧴","🍶","🥤","🫧","🏔️","🍼","⛽","🔌","🚰","🗄️","🥃","🫗","🧪","🏃"];
 const fmt = n => Number(n||0).toLocaleString("uk-UA")+" ₴";
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const safeUrl = u => /^https?:\/\//i.test(String(u||"").trim()) ? String(u).trim() : "";
+const safeUrl = u => { u=String(u||"").trim();
+  return (/^https?:\/\//i.test(u) || /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(u)) ? u : "" };
+const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints>1 && /Macintosh/.test(navigator.userAgent));
+const IN_APP = /FBAN|FBAV|Instagram|TikTok|Snapchat|MicroMessenger|Line\/|; wv\)/i.test(navigator.userAgent);
 const $ = id => document.getElementById(id);
 const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
 
@@ -66,7 +73,7 @@ let auth, db, user=null, isAdmin=false, unsubMy=null, unsubAdmin=null, adminRead
 let cart = {};
 try{ cart = JSON.parse(localStorage.getItem("cart")||"{}") }catch{ cart = {} }
 let PRODUCTS = DEFAULT_PRODUCTS.slice(), DB_PRODUCTS = [];
-let myOrders=[], allOrders=[], catFilter="all", knownIds=new Set(), current="shop", adminTab="orders", editingId=null;
+let myOrders=[], allOrders=[], catFilter="all", knownIds=new Set(), current="shop", adminTab="orders", editingId=null, formImg="";
 
 
 /* ---------- UI-хелпери ---------- */
@@ -144,7 +151,15 @@ function confetti(){
 /* ---------- Firebase auth ---------- */
 window.login = async ()=>{
   if(!configured) return toast("Спочатку налаштуйте Firebase (README.md)");
-  try{ await signInWithPopup(auth,new GoogleAuthProvider()); toast("Вітаємо! 👋"); }catch(e){ toast("Не вдалося увійти: "+e.code); }
+  if(IN_APP){
+    $("imodalBody").innerHTML=`<h3>🌐 Відкрийте в браузері</h3><p style="margin:12px 0;color:var(--mut);line-height:1.6">Google не дозволяє вхід усередині цього вбудованого браузера (Telegram, Instagram тощо). Натисніть ⋯ у куті екрана та оберіть <b style="color:var(--ink)">«Відкрити в Chrome / Safari»</b>, після цього увійдіть знову.</p>`;
+    return openModal("imodal");
+  }
+  try{
+    const prov=new GoogleAuthProvider();
+    if(IS_MOBILE&&MOBILE_REDIRECT_LOGIN){ await signInWithRedirect(auth,prov); return; }
+    await signInWithPopup(auth,prov); toast("Вітаємо! 👋");
+  }catch(e){ toast("Не вдалося увійти: "+e.code); }
 };
 window.logout = ()=>signOut(auth);
 window.authToggle = ()=>user?logout():login();
@@ -158,15 +173,16 @@ function onUser(u){
   $("navAdmin").classList.toggle("hidden",!isAdmin);
   $("bnOrders").classList.toggle("hidden",!u);
   $("bnAdmin").classList.toggle("hidden",!isAdmin);
-  $("bnUserIcon").textContent=u?"🚪":"👤";$("bnUserText").textContent=u?"Вийти":"Увійти";
   if(u){
     const av=$("avatar");av.style.display=u.photoURL?"":"none";av.src=u.photoURL||""; $("uname").textContent=(u.displayName||u.email).split(" ")[0];
-    if(!$("fName").value) $("fName").value=u.displayName||"";
+    fillCheckoutFromProfile();
     subscribe();
+    subscribeProducts();
   } else {
     unsubMy&&unsubMy(); unsubAdmin&&unsubAdmin(); myOrders=[]; allOrders=[];
     if(["orders","admin"].includes(current)) go("shop");
   }
+  renderProfile();
 }
 
 function subscribe(){
@@ -189,24 +205,81 @@ const byDate=(a,b)=>ts(b)-ts(a);
 const bySort=(a,b)=>(a.sort??9999)-(b.sort??9999)||String(a.name).localeCompare(String(b.name),"uk");
 const dt = o=>new Date(ts(o)).toLocaleString("uk-UA",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 
+
+/* ---------- Профіль ---------- */
+const profKey=()=>"profile_"+(user?user.uid:"anon");
+function getProfile(){try{return JSON.parse(localStorage.getItem(profKey())||"{}")}catch{return {}}}
+function setProfile(p){try{localStorage.setItem(profKey(),JSON.stringify(p))}catch{}}
+function rememberProfile(name,phone,address){ if(!user)return; const p=getProfile(); setProfile({name:p.name||name,phone:p.phone||phone,address:p.address||address}); renderProfile(); }
+function fillCheckoutFromProfile(){
+  const p=user?getProfile():{};
+  if(!$("fName").value) $("fName").value=p.name||(user&&user.displayName)||"";
+  if(!$("fPhone").value) $("fPhone").value=p.phone||"";
+  if(!$("fAddr").value) $("fAddr").value=p.address||"";
+}
+window.saveProfileForm = ()=>{
+  const name=$("prName").value.trim(),phone=$("prPhone").value.trim(),address=$("prAddr").value.trim();
+  if(phone&&!/^[+\d\s()-]{9,}$/.test(phone)) return toast("Перевірте номер телефону");
+  setProfile({name,phone,address});
+  $("fName").value=name||$("fName").value;$("fPhone").value=phone;$("fAddr").value=address;
+  toast("Дані збережено ✓");
+};
+function renderProfile(){
+  const box=$("profileBox");if(!box)return;
+  const ae=document.activeElement;
+  if(ae&&box.contains(ae)&&ae.tagName==="INPUT") return;      // не заважаємо вводу тексту
+  if(!user){
+    box.innerHTML=`<div class="panel pcenter"><div class="pavatar">👤</div><h3>Увійдіть у профіль</h3>
+      <p>Увійдіть через Google, щоб оформлювати замовлення, зберігати адресу доставки та бачити історію замовлень.</p>
+      <button class="btn big" onclick="login()">Увійти через Google</button></div>`;
+    return;
+  }
+  const p=getProfile(), nm=user.displayName||user.email||"Користувач";
+  const active=myOrders.filter(o=>o.status==="new"||o.status==="process").length;
+  const spent=myOrders.filter(o=>o.status!=="cancel").reduce((s,o)=>s+(o.total||0),0);
+  const av=user.photoURL?`<img src="${esc(user.photoURL)}" alt="" referrerpolicy="no-referrer">`:esc(nm.trim().charAt(0).toUpperCase());
+  const last=myOrders.slice(0,3).map(o=>`<div class="oline"><span>${dt(o)} · ${fmt(o.total)}</span>${badge(o.status)}</div>`).join("");
+  box.innerHTML=`
+    <div class="panel phead"><div class="pavatar">${av}</div>
+      <div><h3>${esc(nm)}</h3><div class="pmail">${esc(user.email||"")}</div>${isAdmin?'<span class="badge s-process">Адміністратор</span>':""}</div></div>
+    <div class="admin-stats pstats"><div><b>${myOrders.length}</b><span>замовлень</span></div><div><b>${active}</b><span>у роботі</span></div><div><b>${fmt(spent)}</b><span>сума покупок</span></div></div>
+    <div class="panel"><h3>Дані для доставки</h3>
+      <p style="color:var(--mut);font-size:14px;margin:4px 0 0">Підставляться в кошик автоматично.</p>
+      <label>Ім'я</label><input id="prName" value="${esc(p.name||user.displayName||"")}" autocomplete="name">
+      <label>Телефон</label><input id="prPhone" type="tel" value="${esc(p.phone||"")}" placeholder="+380..." autocomplete="tel">
+      <label>Адреса</label><input id="prAddr" value="${esc(p.address||"")}" placeholder="Вулиця, будинок, квартира" autocomplete="street-address">
+      <div style="margin-top:16px"><button class="btn" onclick="saveProfileForm()">Зберегти</button></div></div>
+    <div class="panel"><h3>Останні замовлення</h3><div class="olist">${last||'<p style="color:var(--mut);margin-top:8px">Замовлень поки немає.</p>'}</div>
+      ${myOrders.length?'<div style="margin-top:14px"><button class="btn ghost sm" onclick="go(\'orders\')">Усі замовлення →</button></div>':""}</div>
+    <div class="pactions">${isAdmin?'<button class="btn" onclick="go(\'admin\')">⚙️ Адмін-панель</button>':""}<button class="btn ghost" onclick="logout()">Вийти з акаунта</button></div>`;
+}
+
 /* ---------- Навігація ---------- */
 window.go = v=>{
-  if((v==="orders"&&!user)||(v==="admin"&&!isAdmin)){ if(!user) toast("Увійдіть через Google"); return; }
+  if(v==="orders"&&!user){ go("profile"); return; }
+  if(v==="admin"&&!isAdmin) return;
   current=v;
-  for(const s of ["shop","cart","orders","admin"]){const el=$("v-"+s);el.classList.toggle("hidden",s!==v);if(s===v){el.style.animation="none";el.offsetHeight;el.style.animation=""}}
+  for(const s of ["shop","cart","orders","profile","admin"]){const el=$("v-"+s);el.classList.toggle("hidden",s!==v);if(s===v){el.style.animation="none";el.offsetHeight;el.style.animation=""}}
   document.querySelectorAll("[data-nav]").forEach(b=>b.classList.toggle("active",b.dataset.nav===v));
-  if(v==="cart") renderCart();
+  if(v==="cart") {renderCart();fillCheckoutFromProfile()}
+  if(v==="profile") renderProfile();
   if(v==="admin") {renderAdmin();renderAdminProducts()}
   scrollTo({top:0,behavior:reduce?"auto":"smooth"});
 };
 
 /* ---------- Товари (з бази, або стандартні) ---------- */
+let unsubProducts=null, prodRetry=null;
 function subscribeProducts(){
-  onSnapshot(collection(db,"products"),s=>{
+  unsubProducts&&unsubProducts();clearTimeout(prodRetry);
+  unsubProducts=onSnapshot(collection(db,"products"),s=>{
     DB_PRODUCTS=s.docs.map(d=>({id:d.id,...d.data()})).sort(bySort);
     PRODUCTS = DB_PRODUCTS.length ? DB_PRODUCTS.filter(p=>!p.hidden) : DEFAULT_PRODUCTS.slice();
     afterProducts();
-  },e=>{console.warn("products:",e.code);cleanCart();});
+  },e=>{
+    console.warn("products:",e.code);cleanCart();
+    if(isAdmin) toast("Не вдалося завантажити товари: "+e.code+" — перевірте правила Firestore");
+    prodRetry=setTimeout(subscribeProducts,5000);   // після помилки Firebase закриває підписку — відновлюємо
+  });
 }
 function afterProducts(){cleanCart();saveCart();renderChips();renderProducts();if(current==="cart")renderCart();renderAdminProducts()}
 const getP = id=>PRODUCTS.find(p=>p.id===id);
@@ -291,7 +364,7 @@ window.placeOrder = async ()=>{
       uid:user.uid,email:user.email,name,phone,address:addr,note,payment,
       items,total,status:"new",createdAt:serverTimestamp()});
     notifyTelegram({name,phone,address:addr,note,payment,items,total,email:user.email});
-    cart={};saveCart();confetti();toast("Дякуємо! Замовлення прийнято ✅");go("orders");
+    cart={};saveCart();rememberProfile(name,phone,addr);confetti();toast("Дякуємо! Замовлення прийнято ✅");go("orders");
     if(payment==="transfer"&&PAY_CARD) showPayInfo(total,phone);
   }catch(e){toast("Помилка: "+e.code)}
   $("orderBtn").disabled=false;
@@ -321,6 +394,7 @@ function renderMy(){
   $("myOrders").innerHTML = myOrders.length ? `<table><thead><tr><th>Дата</th><th>Товари</th><th>Сума</th><th>Оплата</th><th>Статус</th></tr></thead><tbody>`+
     myOrders.map((o,i)=>`<tr style="animation-delay:${i*50}ms"><td data-l="Дата">${dt(o)}</td><td data-l="Товари"><div>${itemsHtml(o)}</div></td><td data-l="Сума"><b>${fmt(o.total)}</b></td><td data-l="Оплата">${esc(PAYMENTS[o.payment]||"—")}</td><td data-l="Статус">${badge(o.status)}</td></tr>`).join("")+`</tbody></table>`
     : emptyBox("У вас ще немає замовлень.");
+  renderProfile();
 }
 
 /* ---------- Адмін: вкладки ---------- */
@@ -383,14 +457,59 @@ window.seedProducts = async ()=>{
 };
 function fillCatSelect(){$("pfCat").innerHTML=Object.entries(CATS).filter(([k])=>k!=="all").map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("")}
 $("pfEmojis").innerHTML=EMOJIS.map(e=>`<button type="button" onclick="pickEmoji('${e}')">${e}</button>`).join("");
-window.pickEmoji = e=>{$("pfEm").value=e};
+window.pickEmoji = e=>{$("pfEm").value=e;if(!formImg)syncImgUI()};
+
+/* ---------- Фото товару: завантаження зі стисненням ---------- */
+function compressImage(file,maxSide=640,maxBytes=110000){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(file),img=new Image();
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      let scale=Math.min(1,maxSide/Math.max(img.width,img.height)),q=.82,out="";
+      for(let i=0;i<10;i++){
+        const w=Math.max(1,Math.round(img.width*scale)),h=Math.max(1,Math.round(img.height*scale));
+        const c=document.createElement("canvas");c.width=w;c.height=h;
+        const x=c.getContext("2d");x.fillStyle="#fff";x.fillRect(0,0,w,h);x.drawImage(img,0,0,w,h);   // білий фон для прозорих PNG
+        out=c.toDataURL("image/jpeg",q);
+        if(out.length*0.75<=maxBytes)break;
+        if(q>.52)q-=.1;else scale*=.8;
+      }
+      res(out);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);rej(new Error("bad image"))};
+    img.src=url;
+  });
+}
+function syncImgUI(){
+  const has=!!safeUrl(formImg);
+  $("pfPrev").innerHTML=has?`<img src="${esc(formImg)}" alt="">`:esc($("pfEm").value||"💧");
+  $("pfImg").value=formImg.startsWith("data:")?"":formImg;
+  $("pfImgClear").classList.toggle("hidden",!formImg);
+  $("pfImgInfo").textContent=formImg.startsWith("data:")?`Фото додано (~${Math.round(formImg.length*0.75/1024)} КБ)`:"";
+}
+window.imgUrlInput = ()=>{
+  formImg=$("pfImg").value.trim();
+  const has=!!safeUrl(formImg);
+  $("pfPrev").innerHTML=has?`<img src="${esc(formImg)}" alt="">`:esc($("pfEm").value||"💧");
+  $("pfImgClear").classList.toggle("hidden",!formImg);
+};
+window.clearImg = ()=>{formImg="";syncImgUI()};
+$("pfFile").addEventListener("change",async e=>{
+  const f=e.target.files&&e.target.files[0];e.target.value="";
+  if(!f) return;
+  if(!/^image\//.test(f.type)) return toast("Оберіть файл із зображенням");
+  toast("Обробка фото…");
+  try{formImg=await compressImage(f);syncImgUI();toast("Фото додано ✓")}catch{toast("Не вдалося прочитати фото")}
+});
+$("pfEm").addEventListener("input",()=>{if(!formImg)syncImgUI()});
+
 window.editProduct = id=>{
   fillCatSelect();
   const p=id?DB_PRODUCTS.find(x=>x.id===id):null;
   editingId=p?p.id:null;
   $("pmTitle").textContent=p?"Редагувати товар":"Новий товар";
   $("pfName").value=p?.name||"";$("pfEm").value=p?.em||"💧";$("pfCat").value=p?.cat||"bottle";
-  $("pfPrice").value=p?Number(p.price)||0:"";$("pfDesc").value=p?.desc||"";$("pfImg").value=p?.img||"";
+  $("pfPrice").value=p?Number(p.price)||0:"";$("pfDesc").value=p?.desc||"";formImg=p?.img||"";syncImgUI();
   $("pfHit").checked=!!p?.hit;$("pfHidden").checked=!!p?.hidden;
   $("pfDelete").classList.toggle("hidden",!p);
   openModal("pmodal");
@@ -399,7 +518,7 @@ window.saveProduct = async ()=>{
   const name=$("pfName").value.trim(),price=Math.round(Number($("pfPrice").value));
   if(!name) return toast("Вкажіть назву товару");
   if(!Number.isFinite(price)||price<0||$("pfPrice").value==="") return toast("Вкажіть коректну ціну");
-  const img=$("pfImg").value.trim();
+  const img=formImg;
   if(img&&!safeUrl(img)) return toast("Посилання на фото має починатися з https://");
   const data={name,price,em:$("pfEm").value.trim()||"💧",cat:$("pfCat").value,desc:$("pfDesc").value.trim(),img,hit:$("pfHit").checked,hidden:$("pfHidden").checked};
   $("pfSave").disabled=true;
@@ -418,8 +537,11 @@ window.deleteProduct = async ()=>{
 
 /* ---------- Старт (після оголошення всіх функцій) ---------- */
 if(configured){
-  const app = initializeApp(firebaseConfig);
+  const cfg={...firebaseConfig};
+  if(IS_MOBILE&&MOBILE_REDIRECT_LOGIN&&location.hostname!=="localhost") cfg.authDomain=location.host;   // вхід через ваш домен (проксі у vercel.json)
+  const app = initializeApp(cfg);
   auth = getAuth(app); db = getFirestore(app);
+  getRedirectResult(auth).then(r=>{if(r&&r.user)toast("Вітаємо! 👋")}).catch(e=>toast("Не вдалося увійти: "+e.code));
   onAuthStateChanged(auth, onUser);
   subscribeProducts();
 } else { $("cfgbanner").classList.remove("hidden"); cleanCart(); }
