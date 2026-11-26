@@ -334,3 +334,32 @@ body.noscroll{overflow:hidden}
 @media(max-width:380px){
   .grid{gap:10px}.card .ic{height:80px;font-size:44px}.logo span{font-size:17px}
 }
+
+/* =====================================================
+   ПРОФІЛЬ І ЗАВАНТАЖЕННЯ ФОТО
+   ===================================================== */
+.user img{cursor:pointer}
+.pcenter{text-align:center;padding:34px 20px}
+.pcenter p{color:var(--mut);margin:8px auto 20px;max-width:420px;line-height:1.55}
+.pavatar{width:84px;height:84px;border-radius:50%;margin:0 auto 14px;display:grid;place-items:center;font-size:40px;background:var(--grad);color:#fff;overflow:hidden;box-shadow:0 10px 24px rgba(10,132,232,.35)}
+.pavatar img{width:100%;height:100%;object-fit:cover}
+.phead{display:flex;align-items:center;gap:16px}
+.phead .pavatar{margin:0;flex:none;width:76px;height:76px;font-size:32px;font-family:Unbounded,sans-serif;font-weight:700}
+.phead h3{font-size:20px;margin-bottom:2px}
+.pmail{color:var(--mut);font-size:14px;margin:2px 0 8px;word-break:break-all}
+.pactions{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 20px}
+.olist .oline{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-bottom:1px dashed var(--line);font-size:14px;font-weight:600}
+.imgup{display:flex;gap:14px;align-items:center;margin-bottom:10px}
+.imgprev{width:96px;height:96px;border-radius:18px;display:grid;place-items:center;font-size:48px;overflow:hidden;flex:none;border:1px solid var(--line);
+  background:linear-gradient(160deg,rgba(39,196,245,.25),rgba(10,132,232,.08))}
+.imgprev img{width:100%;height:100%;object-fit:cover}
+.imgbtns{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+@media(max-width:760px){
+  .pactions .btn{flex:1;min-height:48px}
+  .phead .pavatar{width:64px;height:64px;font-size:26px}
+  .imgup{align-items:flex-start}
+}
+
+.pstats{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:760px){.pstats{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.pstats div{padding:12px 10px}.pstats b{font-size:16px}.pstats span{font-size:11px}}
+
