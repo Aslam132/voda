@@ -87,7 +87,7 @@ let auth, db, user=null, isAdmin=false, unsubMy=null, unsubAdmin=null, adminRead
 let cart = {};
 try{ cart = JSON.parse(localStorage.getItem("cart")||"{}") }catch{ cart = {} }
 let PRODUCTS = DEFAULT_PRODUCTS.slice(), DB_PRODUCTS = [];
-let myOrders=[], allOrders=[], catFilter="all", knownIds=new Set(), current="shop", adminTab="orders", editingId=null, formImg="", pickedGeo=null, profGeo=null;
+let blocked={}, myOrders=[], allOrders=[], catFilter="all", knownIds=new Set(), current="shop", adminTab="orders", editingId=null, formImg="", pickedGeo=null, profGeo=null;
 
 
 /* ---------- UI-хелпери ---------- */
@@ -204,7 +204,7 @@ function onUser(u){
     subscribe();
     subscribeProducts();
   } else {
-    unsubMy&&unsubMy(); unsubAdmin&&unsubAdmin(); myOrders=[]; allOrders=[];
+    unsubMy&&unsubMy(); unsubAdmin&&unsubAdmin(); myOrders=[]; allOrders=[]; blocked={};
     if(["orders","admin"].includes(current)) go("shop");
   }
   renderProfile();
@@ -216,13 +216,17 @@ function subscribe(){
     s=>{myOrders=s.docs.map(d=>({id:d.id,...d.data()})).sort(byDate);renderMy()},
     e=>toast("Помилка читання замовлень: "+e.code));
   if(isAdmin){
-    unsubAdmin = onSnapshot(query(collection(db,"orders"),orderBy("createdAt","desc")),
+    const unsubB = onSnapshot(collection(db,"blocked"),
+      s=>{blocked={};s.docs.forEach(d=>blocked[d.id]=d.data());renderAdmin()},
+      e=>toast("Помилка списку заблокованих: "+e.code+" (опублікуйте новий firestore.rules)"));
+    const unsubO = onSnapshot(query(collection(db,"orders"),orderBy("createdAt","desc")),
       s=>{
         allOrders=s.docs.map(d=>({id:d.id,...d.data()}));
         if(adminReady) s.docChanges().forEach(c=>{if(c.type==="added"&&!knownIds.has(c.doc.id)&&c.doc.data().uid!==user.uid){toast("🔔 Нове замовлення від "+c.doc.data().name);beep()}});
         allOrders.forEach(o=>knownIds.add(o.id));adminReady=true;renderAdmin();
       },
       e=>toast("Помилка адмін-доступу: "+e.code));
+    unsubAdmin=()=>{unsubB();unsubO()};
   }
 }
 const ts = o=>o.createdAt?.toMillis?o.createdAt.toMillis():Date.now();
@@ -603,18 +607,23 @@ window.renderAdmin = ()=>{
   const bb=$("bnAdminB");bb.textContent=nNew;bb.classList.toggle("hidden",!nNew);
   $("adminStats").innerHTML=`<div><b>${allOrders.length}</b><span>усього замовлень</span></div><div><b>${nNew}</b><span>нових</span></div>
     <div><b>${cnt("confirmed")+cnt("process")}</b><span>у роботі</span></div><div><b>${fmt(allOrders.filter(o=>o.status==="done").reduce((s,o)=>s+o.total,0))}</b><span>виручка (виконані)</span></div>`;
-  $("adminOrders").innerHTML = list.length ? `<table><thead><tr><th>Дата</th><th>Клієнт</th><th>Доставка</th><th>Товари</th><th>Сума / оплата</th><th>Статус</th></tr></thead><tbody>`+
+  const bl=Object.entries(blocked);
+  const blockedBox=bl.length?`<div class="panel" style="margin-bottom:12px"><b>🚫 Заблоковані клієнти (${bl.length})</b>`+bl.map(([id,b])=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:8px 0;border-bottom:1px dashed var(--line)"><span>${esc(b.name||"Клієнт")} ${b.phone?"· 📞 "+esc(b.phone):""}</span><button class="btn sm" onclick="unblockUser('${esc(id)}')">🔓 Розблокувати</button></div>`).join("")+`</div>`:"";
+  $("adminOrders").innerHTML = blockedBox + (list.length ? `<table><thead><tr><th>Дата</th><th>Клієнт</th><th>Доставка</th><th>Товари</th><th>Сума / оплата</th><th>Статус</th></tr></thead><tbody>`+
     list.map((o,i)=>`<tr style="animation-delay:${Math.min(i,10)*40}ms"><td data-l="Дата">${dt(o)}</td>
-    <td data-l="Клієнт"><div><b>${esc(o.name)}</b><br><a href="tel:${esc(o.phone)}" style="color:var(--blue);font-weight:700">📞 ${esc(o.phone)}</a><br><small style="color:var(--mut)">${esc(o.email)}</small>${o.uid?`<br><button class="btn sm ghost" onclick="blockUser('${esc(o.uid)}')">🚫 Заблокувати</button>`:""}</div></td>
+    <td data-l="Клієнт"><div><b>${esc(o.name)}</b><br><a href="tel:${esc(o.phone)}" style="color:var(--blue);font-weight:700">📞 ${esc(o.phone)}</a><br><small style="color:var(--mut)">${esc(o.email)}</small>${o.uid?(blocked[o.uid]?`<br><button class="btn sm" onclick="unblockUser('${esc(o.uid)}')">🔓 Розблокувати</button>`:`<br><button class="btn sm ghost" onclick="blockUser('${esc(o.uid)}','${esc(o.name)}','${esc(o.phone)}')">🚫 Заблокувати</button>`):""}</div></td>
     <td data-l="Доставка"><div>${esc(o.address)}${geoLink(o)}${o.note?`<br><small style="color:var(--mut)">💬 ${esc(o.note)}</small>`:""}</div></td>
     <td data-l="Товари"><div>${itemsHtml(o)}</div></td>
     <td data-l="Сума"><div><b>${fmt(o.total)}</b><br><small style="color:var(--mut)">${esc(PAYMENTS[o.payment]||"—")}${o.paid?" · <b style='color:var(--ok)'>💳 Оплачено</b>":(o.payment==="liqpay"?" · <b style='color:var(--warn)'>не оплачено</b>":"")}</small></div></td>
     <td data-l="Статус"><select class="st-${esc(o.status)}" onchange="setStatus('${esc(o.id)}',this.value)">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}" ${k===o.status?"selected":""}>${v}</option>`).join("")}</select></td></tr>`).join("")+`</tbody></table>`
-    : emptyBox("Замовлень немає.");
+    : emptyBox("Замовлень немає."));
 };
-window.blockUser = async uid=>{
+window.unblockUser = async uid=>{
+  try{await deleteDoc(doc(db,"blocked",uid));toast("Клієнта розблоковано 🔓")}catch(e){toast("Помилка: "+e.code)}
+};
+window.blockUser = async (uid,name,phone)=>{
   if(!confirm("Заблокувати цього клієнта? Він більше не зможе робити замовлення."))return;
-  try{await setDoc(doc(db,"blocked",uid),{at:serverTimestamp()});toast("Клієнта заблоковано 🚫")}catch(e){toast("Помилка: "+e.code)}
+  try{await setDoc(doc(db,"blocked",uid),{at:serverTimestamp(),name:name||"",phone:phone||""});toast("Клієнта заблоковано 🚫")}catch(e){toast("Помилка: "+e.code)}
 };
 window.setStatus = async (id,s)=>{try{await updateDoc(doc(db,"orders",id),{status:s});toast("Статус оновлено ✓")}catch(e){toast("Помилка: "+e.code)}};
 
