@@ -1,6 +1,6 @@
 # H2O Alex — магазин питної води
 
-Файли: `index.html` (розмітка), `assets/` (логотип і іконка), `api/` (Telegram-функція для Vercel), `SETUP-PAYMENT-TELEGRAM.md` (інструкція: оплата, Telegram, редагування товарів), `style.css` (стилі), `app.js` (логіка, товари, Firebase), `firestore.rules` (правила безпеки бази).
+Файли: `index.html` (розмітка), `assets/` (логотип і іконка), `api/` (Telegram-функція для Vercel), `vercel.json` (вхід через Google на телефонах), `SETUP-PAYMENT-TELEGRAM.md` (інструкція: оплата, Telegram, редагування товарів), `style.css` (стилі), `app.js` (логіка, товари, Firebase), `firestore.rules` (правила безпеки бази).
 
 ## Налаштування Firebase (≈5 хвилин, безкоштовно)
 

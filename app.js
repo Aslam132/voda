@@ -19,6 +19,8 @@ const ADMIN_EMAILS = ["oskarchernysyot@gmail.com"];
 const NOTIFY_URL = "/api/notify";
 
 // Оплата переказом на картку. Залиште PAY_CARD "" щоб вимкнути цей спосіб.
+// Онлайн-оплата LiqPay (потрібні api/liqpay.js, api/liqpay-callback.js і змінні на Vercel — див. SETUP-PAYMENT-TELEGRAM.md).
+const LIQPAY_ENABLED = true;
 const PAY_CARD = "";            // напр. "5375 41XX XXXX XXXX"
 const PAY_CARD_HOLDER = "";     // напр. "Олександр К."
 
@@ -27,10 +29,15 @@ const PAY_CARD_HOLDER = "";     // напр. "Олександр К."
 const MOBILE_REDIRECT_LOGIN = true;
 
 // Мапа вибору адреси (OpenStreetMap, безкоштовно). Зараз налаштована на Олександрію (Кіровоградська обл.).
-const DELIVERY_CITY = "Олександрія";
-const MAP_CENTER = [48.6697, 33.1176];   // центр мапи [широта, довгота]
-const MAP_ZOOM = 13;
-const MAP_BOUNDS = [[48.58, 32.98], [48.76, 33.26]];   // мапа не виходить за ці межі: [[пд-зх], [пн-сх]] — місто з околицями
+// Зони доставки: місто та район. Центр [широта, довгота], межі [[пд-зх],[пн-сх]] — координати орієнтовні, за потреби поправте.
+const ZONES = {
+  city:     {name:"Олександрія",           center:[48.6697,33.1176], zoom:13, minZoom:11, bounds:[[48.58,32.98],[48.76,33.26]]},
+  district: {name:"Олександрійський район", center:[48.62,33.05],    zoom:10, minZoom:9,  bounds:[[48.25,32.35],[49.15,33.85]]}
+};
+// Захист від фейкових замовлень
+const MIN_ORDER = 100;          // мінімальна сума замовлення, ₴ (0 — без обмеження)
+const MAX_PENDING = 2;          // скільки замовлень клієнта може чекати підтвердження одночасно
+const ORDER_COOLDOWN_SEC = 60;  // пауза між замовленнями з одного пристрою
 const MAP_COUNTRY = "ua";                // пошук адрес тільки в цій країні
 /* ========================== */
 
@@ -63,8 +70,8 @@ const DEFAULT_PRODUCTS = [
   {id:"bot",   cat:"acc",     em:"🏃", name:"Спортивна пляшка 0,75 л",      desc:"Харчовий пластик без BPA, з клапаном.", price:220}
 ];
 DEFAULT_PRODUCTS.forEach((p,i)=>p.sort=i);
-const STATUS = {new:"Нове",process:"В обробці",done:"Виконано",cancel:"Скасовано"};
-const PAYMENTS = {cash:"Готівка кур'єру",courier_card:"Картка кур'єру",transfer:"Переказ на картку"};
+const STATUS = {new:"Очікує підтвердження",confirmed:"Підтверджено",process:"В обробці",done:"Виконано",cancel:"Скасовано"};
+const PAYMENTS = {cash:"Готівка кур'єру",courier_card:"Картка кур'єру",liqpay:"Оплата карткою онлайн (LiqPay)",transfer:"Переказ на картку"};
 const EMOJIS = ["💧","🫙","♻️","💎","🧴","🍶","🥤","🫧","🏔️","🍼","⛽","🔌","🚰","🗄️","🥃","🫗","🧪","🏃"];
 const fmt = n => Number(n||0).toLocaleString("uk-UA")+" ₴";
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -127,19 +134,30 @@ function countUp(el){
 
 /* бульбашки у hero */
 (function bubbles(){
-  const c=$("bubbles"),x=c.getContext("2d");let W,H,bs=[],run=true;
-  const size=()=>{W=c.width=c.offsetWidth;H=c.height=c.offsetHeight};size();addEventListener("resize",size);
-  const mk=(init)=>({x:Math.random()*W,y:init?Math.random()*H:H+20,r:3+Math.random()*16,v:.3+Math.random()*1.1,w:Math.random()*Math.PI*2,a:.15+Math.random()*.35});
-  for(let i=0;i<45;i++)bs.push(mk(true));
-  new IntersectionObserver(e=>{run=e[0].isIntersecting;if(run)loop()}).observe(c);
-  function loop(){
-    if(!run||reduce)return;x.clearRect(0,0,W,H);
+  const c=$("bubbles"),x=c.getContext("2d");
+  const lite=IS_MOBILE||innerWidth<760||(navigator.hardwareConcurrency||4)<=4;
+  const dpr=1, N=lite?12:40, GAP=lite?42:0;   // на телефоні: менше бульбашок, ~24 кадри/с, без важких градієнтів
+  let W,H,bs=[],run=true,vis=true,last=0;
+  const size=()=>{W=c.width=c.offsetWidth*dpr;H=c.height=c.offsetHeight*dpr};size();
+  let rt;addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(size,200)});
+  const mk=(init)=>({x:Math.random()*W,y:init?Math.random()*H:H+20,r:3+Math.random()*(lite?11:16),v:.3+Math.random()*1.1,w:Math.random()*Math.PI*2,a:.15+Math.random()*.35});
+  for(let i=0;i<N;i++)bs.push(mk(true));
+  const upd=()=>{const r=run&&vis&&!reduce;if(r&&!raf)raf=requestAnimationFrame(loop)};
+  let raf=0;
+  new IntersectionObserver(e=>{run=e[0].isIntersecting;upd()}).observe(c);
+  document.addEventListener("visibilitychange",()=>{vis=!document.hidden;upd()});
+  function loop(t){
+    raf=0;if(!run||!vis||reduce)return;
+    if(t-last<GAP){upd();return}last=t;
+    x.clearRect(0,0,W,H);
     for(const b of bs){b.y-=b.v;b.w+=.02;b.x+=Math.sin(b.w)*.5;if(b.y<-30)Object.assign(b,mk(false));
-      const g=x.createRadialGradient(b.x-b.r*.3,b.y-b.r*.3,b.r*.1,b.x,b.y,b.r);
-      g.addColorStop(0,`rgba(255,255,255,${b.a+.35})`);g.addColorStop(1,`rgba(255,255,255,${b.a*.15})`);
-      x.beginPath();x.arc(b.x,b.y,b.r,0,7);x.fillStyle=g;x.fill();x.strokeStyle=`rgba(255,255,255,${b.a})`;x.stroke()}
-    requestAnimationFrame(loop);
-  }loop();
+      x.beginPath();x.arc(b.x,b.y,b.r,0,7);
+      if(lite){x.fillStyle=`rgba(255,255,255,${b.a*.5})`;x.fill()}
+      else{const g=x.createRadialGradient(b.x-b.r*.3,b.y-b.r*.3,b.r*.1,b.x,b.y,b.r);
+        g.addColorStop(0,`rgba(255,255,255,${b.a+.35})`);g.addColorStop(1,`rgba(255,255,255,${b.a*.15})`);
+        x.fillStyle=g;x.fill();x.strokeStyle=`rgba(255,255,255,${b.a})`;x.stroke()}}
+    upd();
+  }upd();
 })();
 
 /* конфеті */
@@ -267,21 +285,37 @@ window.openMapPicker = async (cb,start)=>{
   $("mSearch").value="";$("mResults").classList.add("hidden");
   try{await loadLeaflet()}catch{setMapAddr("Не вдалося завантажити мапу. Введіть адресу вручну.",false);return}
   if(!map){
-    map=L.map("map",{zoomControl:false,attributionControl:true,minZoom:11,maxBounds:MAP_BOUNDS,maxBoundsViscosity:.9}).setView(MAP_CENTER,MAP_ZOOM);
+    map=L.map("map",{zoomControl:false,attributionControl:true,maxBoundsViscosity:.9}).setView(ZONES[mapZone].center,ZONES[mapZone].zoom);
+    applyZone(false);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
     L.control.zoom({position:"bottomright"}).addTo(map);
     map.on("movestart",()=>$("mapWrap").classList.add("moving"));
     map.on("moveend",onMapMoved);
   }
   const c=okGeo(start)?[start.lat,start.lng]:null, reuse=mapUsed;
+  if(c) mapZone=inBounds(c,ZONES.city.bounds)?"city":"district";
+  applyZone(false);
   mapUsed=true;
   setTimeout(()=>{
     map.invalidateSize();
-    if(c) map.setView(c,17); else if(!reuse) map.setView(MAP_CENTER,MAP_ZOOM);   // повторно відкриваємо там, де зупинились
+    if(c) map.setView(c,17); else if(!reuse) map.setView(ZONES[mapZone].center,ZONES[mapZone].zoom);   // повторно відкриваємо там, де зупинились
     onMapMoved();
   },80);
 };
-let mapUsed=false;
+let mapUsed=false, mapZone="city";
+const inBounds=(c,b)=>c[0]>=b[0][0]&&c[0]<=b[1][0]&&c[1]>=b[0][1]&&c[1]<=b[1][1];
+function applyZone(move){
+  const z=ZONES[mapZone];
+  document.querySelectorAll("#zoneSwitch button").forEach(b=>b.classList.toggle("on",b.dataset.zone===mapZone));
+  $("mSearch").placeholder="Пошук адреси: "+(mapZone==="city"?"в Олександрії":"в районі (місто, село, вулиця)")+"…";
+  if(!map) return;
+  map.setMinZoom(z.minZoom);map.setMaxBounds(z.bounds);
+  if(move) map.flyTo(z.center,z.zoom,{duration:.7});
+}
+window.setZone = zn=>{
+  if(!ZONES[zn]||zn===mapZone) return;
+  mapZone=zn;$("mSearch").value="";$("mResults").classList.add("hidden");applyZone(true);
+};
 window.mapLocate = ()=>{
   if(!navigator.geolocation) return toast("Геолокація недоступна у цьому браузері");
   toast("Визначаємо ваше місцезнаходження…");
@@ -295,9 +329,9 @@ $("mSearch").addEventListener("input",()=>{
   if(q.length<3){box.classList.add("hidden");return}
   searchTimer=setTimeout(async()=>{
     try{
-      const r=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&accept-language=uk&countrycodes=${MAP_COUNTRY}&viewbox=${MAP_BOUNDS[0][1]},${MAP_BOUNDS[1][0]},${MAP_BOUNDS[1][1]},${MAP_BOUNDS[0][0]}&bounded=1&q=${encodeURIComponent(q)}`);
+      const r=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&accept-language=uk&countrycodes=${MAP_COUNTRY}&viewbox=${ZONES[mapZone].bounds[0][1]},${ZONES[mapZone].bounds[1][0]},${ZONES[mapZone].bounds[1][1]},${ZONES[mapZone].bounds[0][0]}&bounded=1&q=${encodeURIComponent(q)}`);
       const list=await r.json();
-      box.innerHTML=list.length?list.map((x,i)=>`<button type="button" data-i="${i}">📍 ${esc(fmtAddr(x)||x.display_name)}<small>${esc(String(x.display_name||"").split(",").slice(-3).join(",").trim())}</small></button>`).join(""):`<div class="mnone">Нічого не знайдено в місті ${esc(DELIVERY_CITY)}. Спробуйте інакше або посуньте мапу</div>`;
+      box.innerHTML=list.length?list.map((x,i)=>`<button type="button" data-i="${i}">📍 ${esc(fmtAddr(x)||x.display_name)}<small>${esc(String(x.display_name||"").split(",").slice(-3).join(",").trim())}</small></button>`).join(""):`<div class="mnone">Нічого не знайдено в місті ${esc(ZONES[mapZone].name)}. Спробуйте інакше або посуньте мапу</div>`;
       box._list=list;box.classList.remove("hidden");
     }catch{box.innerHTML='<div class="mnone">Помилка пошуку, спробуйте ще раз</div>';box.classList.remove("hidden")}
   },550);
@@ -464,7 +498,7 @@ function renderCart(){
 /* способи оплати у формі */
 (function initPay(){
   const s=$("fPay");
-  s.innerHTML=Object.entries(PAYMENTS).filter(([k])=>k!=="transfer"||PAY_CARD).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("");
+  s.innerHTML=Object.entries(PAYMENTS).filter(([k])=>(k!=="transfer"||PAY_CARD)&&(k!=="liqpay"||LIQPAY_ENABLED)).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("");
 })();
 
 /* ---------- Замовлення ---------- */
@@ -475,17 +509,28 @@ window.placeOrder = async ()=>{
   if(!name||!/^[+\d\s()-]{9,}$/.test(phone)||!addr) return toast("Заповніть ім'я, коректний телефон і адресу");
   const entries=cartEntries();
   if(!entries.length) return toast("Кошик порожній");
+  if($("fWeb")&&$("fWeb").value) return;   // приманка для ботів
+  if(!$("fConfirm").checked) return toast("Поставте галочку, що підтверджуєте замовлення");
+  const pending=myOrders.filter(o=>o.status==="new").length;
+  if(pending>=MAX_PENDING) return toast(`У вас уже є ${pending} замовлення(нь), що чекають підтвердження. Дочекайтесь дзвінка менеджера`);
+  let lastT=0;try{lastT=+localStorage.getItem("lastOrderAt")||0}catch{}
+  const wait=Math.ceil(ORDER_COOLDOWN_SEC-(Date.now()-lastT)/1000);
+  if(wait>0) return toast(`Зачекайте ${wait} с перед наступним замовленням`);
   const items=entries.map(([p,q])=>({id:p.id,name:p.name,price:p.price,qty:q}));
   const total=cartTotal(),note=$("fNote").value.trim();
+  if(MIN_ORDER&&total<MIN_ORDER) return toast(`Мінімальна сума замовлення — ${MIN_ORDER} ₴`);
+  const newClient=!myOrders.some(o=>o.status==="done");
   $("orderBtn").disabled=true;
   try{
-    await addDoc(collection(db,"orders"),{
+    const ref=await addDoc(collection(db,"orders"),{
       uid:user.uid,email:user.email,name,phone,address:addr,note,payment,geo:pickedGeo||null,
-      items,total,status:"new",createdAt:serverTimestamp()});
-    notifyTelegram({name,phone,address:addr,note,payment,items,total,email:user.email,geo:pickedGeo||null});
-    rememberProfile(name,phone,addr,pickedGeo);pickedGeo=null;updateGeoChip();cart={};saveCart();confetti();toast("Дякуємо! Замовлення прийнято ✅");go("orders");
+      items,total,status:"new",paid:false,createdAt:serverTimestamp()});
+    try{localStorage.setItem("lastOrderAt",String(Date.now()));$("fConfirm").checked=false}catch{}
+    notifyTelegram({name,phone,address:addr,note,payment,items,total,email:user.email,geo:pickedGeo||null,newClient});
+    rememberProfile(name,phone,addr,pickedGeo);pickedGeo=null;updateGeoChip();cart={};saveCart();confetti();toast("Дякуємо! Менеджер зателефонує вам для підтвердження ✅");go("orders");
     if(payment==="transfer"&&PAY_CARD) showPayInfo(total,phone);
-  }catch(e){toast("Помилка: "+e.code)}
+    if(payment==="liqpay") payOnline(ref.id);
+  }catch(e){toast(e.code==="permission-denied"?"Не вдалося оформити замовлення. Зателефонуйте нам, будь ласка":"Помилка: "+e.code)}
   $("orderBtn").disabled=false;
 };
 window.testTelegram = async ()=>{
@@ -502,6 +547,18 @@ window.testTelegram = async ()=>{
     else if(r.status===401) toast("Помилка перевірки входу — перевірте FIREBASE_API_KEY на Vercel");
     else toast("Telegram: "+t);
   }catch{toast("Не вдалося звернутися до сервера")}
+};
+window.payOnline = async id=>{
+  toast("Переходимо до оплати…");
+  try{
+    const token=await user.getIdToken();
+    const r=await fetch("/api/liqpay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token,orderId:id})});
+    if(!r.ok) throw new Error(r.status);
+    const {data,signature}=await r.json();
+    const f=document.createElement("form");f.method="POST";f.action="https://www.liqpay.ua/api/3/checkout";f.acceptCharset="utf-8";
+    for(const [k,v] of [["data",data],["signature",signature]]){const i=document.createElement("input");i.type="hidden";i.name=k;i.value=v;f.appendChild(i)}
+    document.body.appendChild(f);f.submit();
+  }catch(e){toast("Не вдалося відкрити оплату. Оплатіть пізніше у «Мої замовлення» або зателефонуйте нам")}
 };
 async function notifyTelegram(order){
   if(!NOTIFY_URL) return;
@@ -521,12 +578,12 @@ function showPayInfo(total,phone){
 }
 
 const itemsHtml = o=>o.items.map(i=>`${esc(i.name)} × ${i.qty}`).join("<br>");
-const badge = s=>`<span class="badge s-${esc(s)}">${esc(STATUS[s]||s)}</span>`;
+const badge = (s,o)=>`<span class="badge s-${esc(s)}">${esc(STATUS[s]||s)}</span>${o&&o.paid?' <span class="badge s-done">💳 Оплачено</span>':""}${o&&o.payment==="liqpay"&&!o.paid&&s!=="cancel"?` <button class="btn sm" onclick="payOnline('${esc(o.id)}')">Оплатити</button>`:""}`;
 const emptyBox=t=>`<div class="empty"><span class="e">💧</span>${t}</div>`;
 
 function renderMy(){
   $("myOrders").innerHTML = myOrders.length ? `<table><thead><tr><th>Дата</th><th>Товари</th><th>Сума</th><th>Оплата</th><th>Статус</th></tr></thead><tbody>`+
-    myOrders.map((o,i)=>`<tr style="animation-delay:${i*50}ms"><td data-l="Дата">${dt(o)}</td><td data-l="Товари"><div>${itemsHtml(o)}</div></td><td data-l="Сума"><b>${fmt(o.total)}</b></td><td data-l="Оплата">${esc(PAYMENTS[o.payment]||"—")}</td><td data-l="Статус">${badge(o.status)}</td></tr>`).join("")+`</tbody></table>`
+    myOrders.map((o,i)=>`<tr style="animation-delay:${i*50}ms"><td data-l="Дата">${dt(o)}</td><td data-l="Товари"><div>${itemsHtml(o)}</div></td><td data-l="Сума"><b>${fmt(o.total)}</b></td><td data-l="Оплата">${esc(PAYMENTS[o.payment]||"—")}</td><td data-l="Статус">${badge(o.status,o)}</td></tr>`).join("")+`</tbody></table>`
     : emptyBox("У вас ще немає замовлень.");
   renderProfile();
 }
@@ -545,15 +602,19 @@ window.renderAdmin = ()=>{
   $("tabOrders").textContent="📦 Замовлення"+(nNew?` (${nNew})`:"");
   const bb=$("bnAdminB");bb.textContent=nNew;bb.classList.toggle("hidden",!nNew);
   $("adminStats").innerHTML=`<div><b>${allOrders.length}</b><span>усього замовлень</span></div><div><b>${nNew}</b><span>нових</span></div>
-    <div><b>${cnt("process")}</b><span>в обробці</span></div><div><b>${fmt(allOrders.filter(o=>o.status==="done").reduce((s,o)=>s+o.total,0))}</b><span>виручка (виконані)</span></div>`;
+    <div><b>${cnt("confirmed")+cnt("process")}</b><span>у роботі</span></div><div><b>${fmt(allOrders.filter(o=>o.status==="done").reduce((s,o)=>s+o.total,0))}</b><span>виручка (виконані)</span></div>`;
   $("adminOrders").innerHTML = list.length ? `<table><thead><tr><th>Дата</th><th>Клієнт</th><th>Доставка</th><th>Товари</th><th>Сума / оплата</th><th>Статус</th></tr></thead><tbody>`+
     list.map((o,i)=>`<tr style="animation-delay:${Math.min(i,10)*40}ms"><td data-l="Дата">${dt(o)}</td>
-    <td data-l="Клієнт"><div><b>${esc(o.name)}</b><br><a href="tel:${esc(o.phone)}" style="color:var(--blue);font-weight:700">📞 ${esc(o.phone)}</a><br><small style="color:var(--mut)">${esc(o.email)}</small></div></td>
+    <td data-l="Клієнт"><div><b>${esc(o.name)}</b><br><a href="tel:${esc(o.phone)}" style="color:var(--blue);font-weight:700">📞 ${esc(o.phone)}</a><br><small style="color:var(--mut)">${esc(o.email)}</small>${o.uid?`<br><button class="btn sm ghost" onclick="blockUser('${esc(o.uid)}')">🚫 Заблокувати</button>`:""}</div></td>
     <td data-l="Доставка"><div>${esc(o.address)}${geoLink(o)}${o.note?`<br><small style="color:var(--mut)">💬 ${esc(o.note)}</small>`:""}</div></td>
     <td data-l="Товари"><div>${itemsHtml(o)}</div></td>
-    <td data-l="Сума"><div><b>${fmt(o.total)}</b><br><small style="color:var(--mut)">${esc(PAYMENTS[o.payment]||"—")}</small></div></td>
+    <td data-l="Сума"><div><b>${fmt(o.total)}</b><br><small style="color:var(--mut)">${esc(PAYMENTS[o.payment]||"—")}${o.paid?" · <b style='color:var(--ok)'>💳 Оплачено</b>":(o.payment==="liqpay"?" · <b style='color:var(--warn)'>не оплачено</b>":"")}</small></div></td>
     <td data-l="Статус"><select class="st-${esc(o.status)}" onchange="setStatus('${esc(o.id)}',this.value)">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}" ${k===o.status?"selected":""}>${v}</option>`).join("")}</select></td></tr>`).join("")+`</tbody></table>`
     : emptyBox("Замовлень немає.");
+};
+window.blockUser = async uid=>{
+  if(!confirm("Заблокувати цього клієнта? Він більше не зможе робити замовлення."))return;
+  try{await setDoc(doc(db,"blocked",uid),{at:serverTimestamp()});toast("Клієнта заблоковано 🚫")}catch(e){toast("Помилка: "+e.code)}
 };
 window.setStatus = async (id,s)=>{try{await updateDoc(doc(db,"orders",id),{status:s});toast("Статус оновлено ✓")}catch(e){toast("Помилка: "+e.code)}};
 

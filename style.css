@@ -163,7 +163,7 @@ tbody tr:hover{transform:scale(1.005)}
 .badge{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:99px;font-size:12px;font-weight:800;color:#fff;white-space:nowrap}
 .badge::before{content:"";width:7px;height:7px;border-radius:50%;background:#fff;opacity:.85}
 .s-new{background:var(--warn)}.s-new::before{animation:blink 1.2s infinite}
-.s-process{background:var(--blue)}.s-done{background:var(--ok)}.s-cancel{background:#8a97a3}
+.s-confirmed{background:#7a5cff}.s-process{background:var(--blue)}.s-done{background:var(--ok)}.s-cancel{background:#8a97a3}
 @keyframes blink{50%{opacity:.2}}
 .admin-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:20px}
 .admin-stats div{background:var(--glass);border:1px solid var(--line);border-radius:20px;padding:18px;box-shadow:var(--shadow)}
@@ -235,7 +235,7 @@ footer p{opacity:.8;margin-top:8px;font-size:14px}
 .aact{display:flex;gap:6px}
 .icon-sm{width:46px;height:46px;border-radius:12px;background:var(--glass);border:1px solid var(--line);font-size:19px;transition:.2s}
 .icon-sm:hover{transform:translateY(-2px);background:var(--glass-b)}
-select.st-new{border-color:var(--warn)}select.st-process{border-color:var(--blue)}select.st-done{border-color:var(--ok)}select.st-cancel{border-color:#8a97a3}
+select.st-new{border-color:var(--warn)}select.st-confirmed{border-color:#7a5cff}select.st-process{border-color:var(--blue)}select.st-done{border-color:var(--ok)}select.st-cancel{border-color:#8a97a3}
 
 .modal{position:fixed;inset:0;z-index:120;background:rgba(5,20,35,.6);backdrop-filter:blur(6px);display:grid;place-items:center;padding:16px;animation:viewin .2s}
 .sheet{width:min(560px,100%);max-height:92vh;overflow:auto;background:var(--bg2);border:1px solid var(--line);border-radius:26px;padding:22px;box-shadow:var(--shadow-l);animation:viewin .3s}
@@ -418,4 +418,39 @@ body.noscroll{overflow:hidden}
   .addrrow .btn{min-height:46px}
   #mLocate{white-space:nowrap}
   .msearch{flex-wrap:nowrap}
+}
+
+.zoneswitch{display:flex;gap:6px;padding:4px;margin:0 0 10px;border-radius:14px;background:var(--glass,rgba(255,255,255,.08));border:1px solid rgba(128,160,200,.25)}
+.zoneswitch button{flex:1;border:0;border-radius:10px;padding:9px 8px;font:inherit;font-weight:600;font-size:.9rem;color:inherit;background:transparent;cursor:pointer;transition:.2s}
+.zoneswitch button.on{background:linear-gradient(135deg,#19b6ff,#2d6bff);color:#fff;box-shadow:0 4px 14px rgba(25,130,255,.35)}
+@media(max-width:600px){.zoneswitch button{font-size:.8rem;padding:9px 4px}}
+
+/* захист замовлень */
+.hp{position:absolute!important;left:-9999px;width:1px;height:1px;opacity:0}
+.chk{display:flex;gap:10px;align-items:flex-start;margin-top:16px;font-size:.92rem;line-height:1.4;cursor:pointer}
+.chk input{width:22px;height:22px;flex:none;margin-top:1px;accent-color:#1a8cff}
+
+/* початкова анімація: плавна поява (тільки transform/opacity) */
+.hero-in>*{animation:heroin .7s cubic-bezier(.2,.8,.2,1) backwards}
+.hero-in>*:nth-child(2){animation-delay:.08s}.hero-in>*:nth-child(3){animation-delay:.16s}
+.hero-in>*:nth-child(4){animation-delay:.24s}.hero-in>*:nth-child(5){animation-delay:.32s}
+@keyframes heroin{from{opacity:0;transform:translateY(22px)}}
+
+/* телефон: легший hero — без важких ефектів */
+@media(max-width:760px){
+  .hero{padding:48px 16px 96px;animation:none;background-size:100% 100%}
+  .hero h1 em{animation:none;background:none;color:#aef0ff;-webkit-text-fill-color:#aef0ff}
+  .hero h1{text-shadow:none}
+  .pill{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(255,255,255,.22);font-size:13px;margin-bottom:16px}
+  .hero p{margin-bottom:22px}
+  .drop{animation:none;filter:none;opacity:.35;width:70px}.drop.l{left:-8px;top:12%}.drop.r{right:-6px;top:58%;width:54px}
+  .waves{height:70px}
+  .waves use:nth-child(1),.waves use:nth-child(2){display:none}
+  .waves use{will-change:transform}
+  .waves use:nth-child(3){animation-duration:16s}.waves use:nth-child(4){animation-duration:26s}
+  .hero .btn{box-shadow:0 6px 16px rgba(0,30,80,.3)}
+  .hero-logo{animation:none}
+  .hero-in>*{animation-duration:.5s}
+  .card .ic span{animation:none}
+  .modal{backdrop-filter:none}
 }
